@@ -24,9 +24,9 @@ class ModelConfig(PretrainedConfig):
         self.n_kv_heads = n_kv_heads
         self.vocab_size = vocab_size
         self.hidden_dim = hidden_dim
-        self.mutiple_of = multiple_of
+        self.multiple_of = multiple_of
         self.norm_eps = norm_eps
         self.max_seq_len = max_seq_len
-        self.droupout = dropout
+        self.dropout = dropout
         self.flash_attn = flash_attn
         super().__init__(**kwargs)
