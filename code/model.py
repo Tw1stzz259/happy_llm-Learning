@@ -99,7 +99,7 @@ class Attention(nn.Module):
         #本地计算头数，等于总头数除以模型并行处理大小
         self.n_local_heads = args.n_heads // model_parallel_size
         #本地键值头数，等于键值头数除以模型并行处理大小
-        self.n_local_kv_heads = args.n_kv_heads // model_parallel_size 
+        self.n_local_kv_heads = self.n_kv_heads // model_parallel_size 
         #重复次数,用于扩展箭和值的尺寸
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         #每个头的维度，等于模型维度除以总头数
@@ -107,8 +107,8 @@ class Attention(nn.Module):
         
         #定义权重矩阵
         self.wq = nn.Linear(args.dim,args.n_heads * self.head_dim,bias=False)
-        self.wk = nn.Linear(args.dim,args.n_kv_heads * self.head_dim,bias=False)
-        self.wv = nn.Linear(args.dim,args.n_kv_heads * self.head_dim,bias=False)
+        self.wk = nn.Linear(args.dim,self.n_kv_heads * self.head_dim,bias=False)
+        self.wv = nn.Linear(args.dim,self.n_kv_heads * self.head_dim,bias=False)
         #输出权重矩阵,负责把多个头的语义空间汇总
         self.wo = nn.Linear(args.n_heads*self.head_dim,args.dim,bias=False)
         
@@ -119,7 +119,7 @@ class Attention(nn.Module):
         self.dropout = args.dropout
         
         #检查是否使用Flash Attention （需要PyTorch >= 2.0）
-        self.flash = hasattr(torch.nn.functional,'scaled_dot_preoduct_attention')
+        self.flash = args.flash_attn and hasattr(torch.nn.functional,'scaled_dot_product_attention')
         if not self.flash:
             #如果不支持Flash Attention ,则手动实现注意力机制，并设置mask
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
@@ -138,7 +138,7 @@ class Attention(nn.Module):
         #调整形状以适应头的维度
         xq = xq.view(bsz,seqlen,self.n_local_heads,self.head_dim)
         xk = xk.view(bsz,seqlen,self.n_local_kv_heads,self.head_dim)
-        xv = xv.view(bsz,seqlen,self.n_local_kv_heaads,self.head_dim)
+        xv = xv.view(bsz,seqlen,self.n_local_kv_heads,self.head_dim)
         
         #应用旋转位置嵌入
         xq,xk = apply_rotary_emb(xq,xk,freqs_cos,freqs_sin)
@@ -161,9 +161,61 @@ class Attention(nn.Module):
             scores = torch.matmul(xq,xk.transpose(2,3)) / math.sqrt(self.head_dim)
             assert hasattr(self,'mask')
             scores = scores + self.mask[:,:,:seqlen,:seqlen]
-            scores = F.softmax
+            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+            scores = self.attn_dropout(scores)
+            output = torch.matmul(scores,xv)
+            
+        #回复时间维度并合并头
+        output = output.transpose(1,2).contiguous().view(bsz,seqlen,-1)
+        
+        #最终投影回残差流
+        output = self.wo(output)
+        output = self.resid_dropout(output)
+        return output
+    
+    
+class MLP(nn.Module):
+    def __init__(self,dim:int,hidden_dim:int,multiple_of:int,dropout:float):
+        super().__init__()
+        if hidden_dim is None:
+            #因为FNN只有两个线性层，但是SwiGLU有三个线性层，为了和FNN参数量接近，乘以2/3
+            hidden_dim = 4 * dim
+            hidden_dim = int(2*hidden_dim/3)
+            #这里最后让hidden_dim取multiple_of的倍数，因为这样可以更改适配GPU矩阵乘法，提高计算效率
+            hidden_dim = multiple_of * ((hidden_dim + multiple_of -1) // multiple_of)
+        #定义三个线性层，之后通过SiLU激活，其中w1和w3是两条特征分支，w2是输出投影层
+        self.w1 = nn.Linear(dim,hidden_dim,bias=False)
+        self.w2 = nn.Linear(hidden_dim,dim,bias=False)
+        self.w3 = nn.Linear(dim,hidden_dim,bias=False)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self,x):
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
 
         
         
-    
         
+class DecoderLayer(nn.Module):
+    def __init__(self,layer_id:int,args:ModelConfig):
+        super().__init__()
+        self.n_heads = args.n_heads
+        self.dim = args.dim
+        self.head_dim = args.dim // args.n_heads
+        self.attention = Attention(args)
+        self.feed_forward = MLP(
+            dim=args.dim,
+            hidden_dim=args.hidden_dim,
+            multiple_of=args.multiple_of,
+            dropout=args.dropout,
+        )
+        #定义层的ID
+        self.layer_id = layer_id
+        #定义注意力计算的归一化层
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        #定义前馈神经网络计算的归一化层
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+
+    def forward(self,x:torch.Tensor,freqs_cos:torch.Tensor,freqs_sin:torch.Tensor):
+        h = x + self.attention(self.attention_norm(x), freqs_cos, freqs_sin)
+        out = h + self.feed_forward(self.ffn_norm(h))
+        return out

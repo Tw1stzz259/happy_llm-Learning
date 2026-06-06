@@ -1,8 +1,12 @@
 # Virtual environments
 /.venv
+/.venv-win
 venv/
 env/
 ENV/
+
+# Local repository notes
+/仓库信息.md
 
 # Legacy single-file modules (now split into code/)
 /FNN.py
