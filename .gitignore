@@ -52,6 +52,7 @@ wheels/
 *.ckpt
 *.safetensors
 checkpoints/
+output/
 outputs/
 data/
 datasets/
