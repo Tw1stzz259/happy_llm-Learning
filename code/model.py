@@ -270,9 +270,103 @@ class Transformer(PreTrainedModel):
         
         #初始化最后一次前向传播的损失属性
         self.last_loss = None
-        self.OUT = CausalLMOutputWithPast()  # 输出容器
         #设置所有的子模块不允许切分
         self._no_split_modules = [name for name,_ in self.named_modules()]
+        
+    def _init_weights(self,module):
+    #初始化权重的函数
+        if isinstance(module,nn.Linear):
+            #normal_用正态分布的随机数填充输入张量的所有元素,mean为均值，std为标准差,原地操作
+            torch.nn.init.normal_(module.weight,mean=0.0,std=0.02)
+            if module.bias is not None:
+                #如果应用偏置，则偏置初始化为0
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module,nn.Embedding):
+            torch.nn.init.normal_(module.weight,mean=0.0,std=0.02)
+            
+    
+    def forward(self,tokens:Optional[torch.Tensor] = None,targets:Optional[torch.Tensor] = None,**kwargs)->CausalLMOutputWithPast:
+        """
+        - tokens: Optional[torch.Tensor], 输入 token 张量。
+        - targets: Optional[torch.Tensor], 目标 token 张量。
+        - kv_cache: bool, 是否使用键值缓存。
+        - kwargs: 其他关键字参数。
+
+        - self.OUT: CausalLMOutputWithPast, 包含 logits 和损失。
+        """
+        if 'input_ids' in kwargs:
+            tokens = kwargs['input_ids']
+        if 'labels' in kwargs:
+            targets = kwargs['labels']
+        if 'lables' in kwargs:
+            targets = kwargs['lables']
+        if tokens is None:
+            raise ValueError("tokens or input_ids must be provided")
+            
+        #前向传播函数
+        _bsz,seqlen = tokens.shape
+        #通过词嵌入层和Dropout层
+        h = self.tok_embeddings(tokens)
+        h = self.dropout(h)
+        #获取相对位置嵌入的频率
+        freqs_cos = self.freqs_cos[:seqlen]
+        freqs_sin = self.freqs_sin[:seqlen]
+        
+        #通过Decoder层
+        for layer in self.layers:
+            h = layer(h,freqs_cos,freqs_sin)
+        #通过归一化层
+        h = self.norm(h)
+        
+        if targets is not None:
+            #如果给定了目标，计算损失
+            logits = self.output(h)
+            self.last_loss = F.cross_entropy(logits.view(-1,logits.size(-1)),targets.view(-1),ignore_index=0)
+        else:
+            #推理时优化，只对最后一个位置的输出进行前向传播
+            logits = self.output(h[:,[-1],:])
+            self.last_loss = None   
+        
+        
+        #设置输出
+        return CausalLMOutputWithPast(loss=self.last_loss,logits=logits)
+    
+    @torch.inference_mode()
+    def generate(self, idx, stop_id=None, max_new_tokens=256, temperature=1.0, top_k=None):
+        """
+        给定输入序列 idx（形状为 (bz,seq_len) 的长整型张量），通过多次生成新 token 来完成序列。
+        在 model.eval() 模式下运行。效率较低的采样版本，没有使用键k/v cache。
+        """
+        index = idx.shape[1]
+        for _ in range(max_new_tokens):
+            # 如果序列上下文过长，截断它到最大长度
+            idx_cond = idx if idx.size(1) <= self.args.max_seq_len else idx[:, -self.args.max_seq_len:]
+            
+            # 前向传播获取序列中最后一个位置的 logits
+            logits = self(idx_cond).logits
+            logits = logits[:, -1, :] # 只保留最后一个时间步的输出
+            
+            if temperature == 0.0:
+                # 选择最有可能的索引
+                _, idx_next = torch.topk(logits, k=1, dim=-1)
+            else:
+                # 缩放 logits 并应用 softmax
+                logits = logits / temperature
+                if top_k is not None:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = -float('Inf')
+                probs = F.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
+            
+
+            if stop_id is not None and (idx_next == stop_id).all():
+                break
+
+            # 将采样的索引添加到序列中并继续
+            idx = torch.cat((idx, idx_next), dim=1)
+
+        return idx[:, index:] # 只返回生成的token
+    
 
     
     
