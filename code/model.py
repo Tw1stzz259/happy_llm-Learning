@@ -321,7 +321,15 @@ class Transformer(PreTrainedModel):
         if targets is not None:
             #如果给定了目标，计算损失
             logits = self.output(h)
-            self.last_loss = F.cross_entropy(logits.view(-1,logits.size(-1)),targets.view(-1),ignore_index=0)
+            ignore_index = self.args.pad_token_id if self.args.pad_token_id is not None else 0
+            if torch.any(targets == -100):
+                ignore_index = -100
+            self.last_loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=ignore_index,
+                reduction='none',
+            )
         else:
             #推理时优化，只对最后一个位置的输出进行前向传播
             logits = self.output(h[:,[-1],:])
@@ -329,7 +337,9 @@ class Transformer(PreTrainedModel):
         
         
         #设置输出
-        return CausalLMOutputWithPast(loss=self.last_loss,logits=logits)
+        output = CausalLMOutputWithPast(loss=self.last_loss, logits=logits)
+        output['last_loss'] = self.last_loss
+        return output
     
     @torch.inference_mode()
     def generate(self, idx, stop_id=None, max_new_tokens=256, temperature=1.0, top_k=None):

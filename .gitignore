@@ -51,6 +51,8 @@ wheels/
 *.pth
 *.ckpt
 *.safetensors
+code/test_model/
+code/tiny_pretrain.jsonl
 checkpoints/
 output/
 outputs/

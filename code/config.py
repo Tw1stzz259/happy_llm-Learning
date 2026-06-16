@@ -16,6 +16,7 @@ class ModelConfig(PretrainedConfig):
             max_seq_len:int = 512, #最大序列长度
             dropout:float = 0.0, #dropout率
             flash_attn:bool = True, #是否使用flash attention
+            pad_token_id:int = 0, # padding token id
             **kwargs,
     ):
         self.dim = dim
@@ -29,4 +30,5 @@ class ModelConfig(PretrainedConfig):
         self.max_seq_len = max_seq_len
         self.dropout = dropout
         self.flash_attn = flash_attn
+        self.pad_token_id = pad_token_id
         super().__init__(**kwargs)
