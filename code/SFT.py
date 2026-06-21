@@ -51,6 +51,9 @@ def train_epoch(epoch):
         X = X.to(args.device)
         Y = Y.to(args.device)
         loss_mask = loss_mask.to(args.device)
+        valid_tokens = loss_mask.sum()
+        if valid_tokens.item() == 0:
+            continue
 
         lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch)
         for param_group in optimizer.param_groups:
@@ -60,7 +63,7 @@ def train_epoch(epoch):
             out = model(X, Y)
             loss = out.last_loss / args.accumulation_steps
             loss_mask = loss_mask.view(-1)
-            loss = torch.sum(loss * loss_mask) / loss_mask.sum()
+            loss = torch.sum(loss * loss_mask) / valid_tokens
 
         scaler.scale(loss).backward()
 
@@ -139,14 +142,14 @@ def init_model():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tiny-LLM SFT")
 
-    parser.add_argument("--out_dir", type=str, default="sft_model_215M", help="model output directory")
+    parser.add_argument("--out_dir", type=str, default="sft_model_40M", help="model output directory")
     parser.add_argument("--epochs", type=int, default=1, help="training epochs")
-    parser.add_argument("--batch_size", type=int, default=64, help="batch size")
+    parser.add_argument("--batch_size", type=int, default=4, help="batch size")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="learning rate")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="training device")
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "bfloat16", "float16"], help="mixed precision dtype")
-    parser.add_argument("--dim", type=int, default=1024, help="model dimension")
-    parser.add_argument("--n_layers", type=int, default=18, help="Transformer layers")
+    parser.add_argument("--dim", type=int, default=576, help="model dimension")
+    parser.add_argument("--n_layers", type=int, default=9, help="Transformer layers")
     parser.add_argument("--n_heads", type=int, default=8, help="attention heads")
     parser.add_argument("--n_kv_heads", type=int, default=8, help="KV attention heads")
     parser.add_argument("--max_seq_len", type=int, default=512, help="max sequence length")
@@ -154,7 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=0, help="dataloader workers")
     parser.add_argument("--data_path", type=str, default="./BelleGroup_sft.jsonl", help="SFT jsonl data path")
     parser.add_argument("--tokenizer_path", type=str, default="./Tokenizer", help="tokenizer path")
-    parser.add_argument("--pretrain_ckpt", type=str, default="./base_model_215M/pretrain_1024_18_6144_final.pth", help="pretrain checkpoint path")
+    parser.add_argument("--pretrain_ckpt", type=str, default="./base_model_40M/pretrain_576_9_6144_final.pth", help="pretrain checkpoint path")
 
     parser.add_argument("--accumulation_steps", type=int, default=8, help="gradient accumulation steps")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="gradient clipping")

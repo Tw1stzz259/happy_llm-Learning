@@ -81,6 +81,9 @@ def train_epoch(epoch):
         X = X.to(args.device)  #输入序列
         Y = Y.to(args.device)  #目标序列
         loss_mask = loss_mask.to(args.device)   #损失掩码，用于忽略padding token
+        valid_tokens = loss_mask.sum()
+        if valid_tokens.item() == 0:
+            continue
         
         #计算当前步骤的学习率
         lr = get_lr(epoch * iter_per_epoch + step,args.epochs * iter_per_epoch)
@@ -97,7 +100,7 @@ def train_epoch(epoch):
             #将loss_mask展平为一维
             loss_mask = loss_mask.view(-1)
             #应用掩码计算有效损失（忽略padding位置）
-            loss = torch.sum(loss * loss_mask) / loss_mask.sum()
+            loss = torch.sum(loss * loss_mask) / valid_tokens
             
         #使用scaler进行混合精度的反向传播
         scaler.scale(loss).backward()
@@ -198,14 +201,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tiny-LLM Pretraining")
     
     # 基础训练参数
-    parser.add_argument("--out_dir", type=str, default="base_model_215M", help="模型输出目录")
+    parser.add_argument("--out_dir", type=str, default="base_model_40M", help="模型输出目录")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数")
-    parser.add_argument("--batch_size", type=int, default=64, help="批次大小")
+    parser.add_argument("--batch_size", type=int, default=4, help="批次大小")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="学习率")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="数据类型")
-    parser.add_argument("--dim", type=int, default=1024, help="模型维度")
-    parser.add_argument("--n_layers", type=int, default=18, help="Transformer层数")
+    parser.add_argument("--dim", type=int, default=576, help="模型维度")
+    parser.add_argument("--n_layers", type=int, default=9, help="Transformer层数")
     parser.add_argument("--n_heads", type=int, default=8, help="注意力头数")
     parser.add_argument("--n_kv_heads", type=int, default=8, help="KV注意力头数")
     parser.add_argument("--max_seq_len", type=int, default=512, help="最大序列长度")

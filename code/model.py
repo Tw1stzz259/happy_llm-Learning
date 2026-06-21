@@ -321,13 +321,10 @@ class Transformer(PreTrainedModel):
         if targets is not None:
             #如果给定了目标，计算损失
             logits = self.output(h)
-            ignore_index = self.args.pad_token_id if self.args.pad_token_id is not None else 0
-            if torch.any(targets == -100):
-                ignore_index = -100
             self.last_loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 targets.view(-1),
-                ignore_index=ignore_index,
+                ignore_index=-100,
                 reduction='none',
             )
         else:

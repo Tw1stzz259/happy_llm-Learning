@@ -1,119 +1,128 @@
 import json
-import random
-import re
-import pandas as pd
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
+
 import torch
-import os
-    
-class PretrainDataset(Dataset):
+from torch.utils.data import Dataset
+
+
+class JsonlDataset(Dataset):
     def __init__(self, data_path, tokenizer, max_length=512):
         super().__init__()
+        if max_length < 2:
+            raise ValueError("max_length must be at least 2")
+
         self.data_path = data_path
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.padding = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-        # 预计算每行的起始字节偏移量
         self._offsets = []
-        with open(data_path, 'rb') as f:
-            self._offsets.append(0)
-            while f.readline():
-                self._offsets.append(f.tell())
-        self._total_lines = len(self._offsets) - 1  # 最后一个 tell() 是 EOF
+
+        with open(data_path, "rb") as f:
+            while True:
+                offset = f.tell()
+                if not f.readline():
+                    break
+                self._offsets.append(offset)
 
     def __len__(self):
-        return self._total_lines
+        return len(self._offsets)
 
-    def __getitem__(self, index: int):
-        with open(self.data_path, 'rb') as f:
+    def _read_item(self, index):
+        with open(self.data_path, "rb") as f:
             f.seek(self._offsets[index])
-            line = f.readline().decode('utf-8')
-        sample = json.loads(line)
-        text = f"{self.tokenizer.bos_token}{sample['text']}"
-        input_id = self.tokenizer(text).data['input_ids'][:self.max_length]
-        text_len = len(input_id)
-        # 没满最大长度的剩余部分
-        padding_len = self.max_length - text_len
-        input_id = input_id + [self.padding] * padding_len
-        # 0表示不计算损失
-        loss_mask = [1] * text_len + [0] * padding_len
+            return json.loads(f.readline().decode("utf-8"))
 
-        input_id = np.array(input_id)
-        X = np.array(input_id[:-1]).astype(np.int64)
-        Y = np.array(input_id[1:]).astype(np.int64)
-        loss_mask = np.array(loss_mask[1:]).astype(np.int64)
-        return torch.from_numpy(X), torch.from_numpy(Y), torch.from_numpy(loss_mask)
-    
-class SFTDataset(Dataset):
+    def _build_tensors(self, input_ids, loss_mask):
+        padding_len = self.max_length - len(input_ids)
+        input_ids = input_ids + [self.padding] * padding_len
+        loss_mask = loss_mask + [0] * padding_len
+
+        x = torch.tensor(input_ids[:-1], dtype=torch.long)
+        y = torch.tensor(input_ids[1:], dtype=torch.long)
+        shifted_mask = torch.tensor(loss_mask[1:], dtype=torch.long)
+        y[shifted_mask == 0] = -100
+        return x, y, shifted_mask
+
+
+class PretrainDataset(JsonlDataset):
+    def __getitem__(self, index):
+        sample = self._read_item(index)
+        content_ids = self.tokenizer(
+            sample["text"],
+            add_special_tokens=False,
+        ).input_ids
+
+        input_ids = [self.tokenizer.bos_token_id]
+        input_ids += content_ids[: self.max_length - 2]
+        input_ids += [self.tokenizer.eos_token_id]
+        loss_mask = [1] * len(input_ids)
+        return self._build_tensors(input_ids, loss_mask)
+
+
+class SFTDataset(JsonlDataset):
     def __init__(self, data_path, tokenizer, max_length=512):
-        super().__init__()
-        self.data_path = data_path
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.padding = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-        self._offsets = []
-        with open(data_path, 'rb') as f:
-            self._offsets.append(0)
-            while f.readline():
-                self._offsets.append(f.tell())
-        self._total_lines = len(self._offsets) - 1 
+        super().__init__(data_path, tokenizer, max_length)
+        self.assistant_marker = tokenizer(
+            "<|im_start|>assistant\n",
+            add_special_tokens=False,
+        ).input_ids
 
-    def __len__(self):
-        return self._total_lines
+    def _marker_positions(self, input_ids):
+        marker_length = len(self.assistant_marker)
+        return [
+            i
+            for i in range(len(input_ids) - marker_length + 1)
+            if input_ids[i : i + marker_length] == self.assistant_marker
+        ]
+
+    def _truncate_input_ids(self, input_ids):
+        if len(input_ids) <= self.max_length:
+            return input_ids
+
+        marker_positions = self._marker_positions(input_ids)
+        if not marker_positions:
+            return input_ids[: self.max_length]
+
+        last_marker = marker_positions[-1]
+        window_start = max(0, len(input_ids) - self.max_length)
+        if window_start > last_marker:
+            window_start = last_marker
+        return input_ids[window_start : window_start + self.max_length]
 
     def generate_loss_mask(self, input_ids):
-        # 生成 loss mask, 0 表示不计算损失, 1 表示计算损失
         mask = [0] * len(input_ids)
-        a_sequence = self.tokenizer("<|im_start|>assistant\n")['input_ids']  # <|im_start|>assistant\n
-        a_length = len(a_sequence)
-        n = len(input_ids)
+        marker_length = len(self.assistant_marker)
         i = 0
-        
-        while i <= n - a_length:
-            # 检查当前位置是否匹配目标子序列
-            match = True
-            for k in range(a_length):
-                if input_ids[i + k] != a_sequence[k]:
-                    match = False
-                    break
-            if match:
-                # 从子序列结束的位置开始查找第一个 4 (eos_token_id)
-                j = None
-                for idx in range(i + a_length, n):
-                    if input_ids[idx] == self.tokenizer.eos_token_id:
-                        j = idx
-                        break
-                if j is not None:
-                    start = i + a_length
-                    end = j  # 结束位置设为j（包含4）
-                    # 标记区间为1（包括start到end）
-                    if start <= end:
-                        for pos in range(start, end + 1):
-                            if pos < len(mask):
-                                mask[pos] = 1
-                # 跳过当前子序列，避免重叠匹配
-                i += a_length
-            else:
+
+        while i <= len(input_ids) - marker_length:
+            if input_ids[i : i + marker_length] != self.assistant_marker:
                 i += 1
+                continue
+
+            start = i + marker_length
+            end = len(input_ids) - 1
+            for position in range(start, len(input_ids)):
+                if input_ids[position] == self.tokenizer.eos_token_id:
+                    end = position
+                    break
+
+            if start <= end:
+                for position in range(start, end + 1):
+                    mask[position] = 1
+            i = end + 1
+
         return mask
 
-    def __getitem__(self, index: int):
-        with open(self.data_path, 'rb') as f:
-            f.seek(self._offsets[index])
-            line = f.readline().decode('utf-8')
-        sample = json.loads(line)
-        text = self.tokenizer.apply_chat_template(sample, tokenize=False, add_generation_prompt=False)
-        input_id = self.tokenizer(text).data['input_ids'][:self.max_length]
-        text_len = len(input_id)
-        # 没满最大长度的剩余部分
-        padding_len = self.max_length - text_len
-        input_id = input_id + [self.padding] * padding_len
-        # 0表示不计算损失
-        loss_mask = self.generate_loss_mask(input_id)
-
-        input_id = np.array(input_id)
-        X = np.array(input_id[:-1]).astype(np.int64)
-        Y = np.array(input_id[1:]).astype(np.int64)
-        loss_mask = np.array(loss_mask[1:]).astype(np.int64)
-        return torch.from_numpy(X), torch.from_numpy(Y), torch.from_numpy(loss_mask)
+    def __getitem__(self, index):
+        sample = self._read_item(index)
+        text = self.tokenizer.apply_chat_template(
+            sample,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        input_ids = self.tokenizer(
+            text,
+            add_special_tokens=False,
+        ).input_ids
+        input_ids = self._truncate_input_ids(input_ids)
+        loss_mask = self.generate_loss_mask(input_ids)
+        return self._build_tensors(input_ids, loss_mask)

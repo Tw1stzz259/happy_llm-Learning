@@ -5,8 +5,8 @@ class ModelConfig(PretrainedConfig):
     model_type = "Tiny-K"
     def __init__(
             self,
-            dim:int = 256, #模型维度
-            n_layers:int = 4, #Transformer层数
+            dim:int = 576, #模型维度
+            n_layers:int = 9, #Transformer层数
             n_heads:int = 8, # 注意力机制的头数
             n_kv_heads:int = 8, #键值头的数量
             vocab_size:int = 6144,# 词汇表大小
