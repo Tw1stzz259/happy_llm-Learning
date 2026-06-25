@@ -142,8 +142,8 @@ def train_epoch(epoch):
             torch.save(model.state_dict(), ckp)
             model.train()  # 切换回训练模式
             
-        # 每20000步保存一个带步数标记的检查点
-        if (step + 1) % 20000 == 0:
+        # 每500000步保存一个带步数标记的检查点
+        if (step + 1) %  500000 == 0:
             model.eval()
             # 构建带步数的检查点文件名
             ckp = f'{args.save_dir}/pretrain_{lm_config.dim}_{lm_config.n_layers}_{lm_config.vocab_size}_step{step+1}.pth'
