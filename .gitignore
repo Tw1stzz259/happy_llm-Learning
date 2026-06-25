@@ -4,6 +4,7 @@
 venv/
 env/
 ENV/
+/code/sft_model_40M
 
 # Local repository notes
 /仓库信息.md
