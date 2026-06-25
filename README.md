@@ -4,10 +4,16 @@
 
 ## 模型对话演示
 
-仓库包含一个已经完成 SFT 的 40M 参数模型权重：
+仓库不包含模型权重文件。对话脚本默认读取已经完成 SFT 的 40M 参数模型权重：
 
 ```text
 code\sft_model_40M\sft_576_9_6144_final.pth
+```
+
+下载模型权重后，请把权重文件放到上面的路径。如果目录不存在，先创建目录：
+
+```powershell
+New-Item -ItemType Directory -Force -Path code\sft_model_40M
 ```
 
 运行连续对话：
@@ -32,6 +38,12 @@ code\config.py
 code\model.py
 code\Tokenizer\
 code\sft_model_40M\sft_576_9_6144_final.pth
+```
+
+如果权重文件放在其他位置，可以用 `--ckpt` 指定：
+
+```powershell
+.\.venv-win\Scripts\python.exe code\chat.py --ckpt "D:\path\to\sft_576_9_6144_final.pth"
 ```
 
 注意：这是从零训练的小参数量模型，适合演示训练链路和基础对话形式，不适合用作可靠的事实问答或数学推理模型。
